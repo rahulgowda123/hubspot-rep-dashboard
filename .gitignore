@@ -1,0 +1,30 @@
+# Secrets — HubSpot Private App token lives here, never commit
+.env
+.env.*
+*.local
+
+# PyInstaller build artifacts
+build/
+dist/
+*.spec
+__pycache__/
+*.pyc
+*.pyo
+
+# Release artifacts (the .exe is ~17 MB — distribute separately, not via git)
+Release/
+
+# Runtime
+server.log
+*.log
+nohup.out
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Temp data dumps
+*.tmp
+*.cache

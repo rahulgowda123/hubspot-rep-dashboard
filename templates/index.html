@@ -1,0 +1,560 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MBR Dashboard</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <h1>Monthly Business Review</h1>
+      <span id="month-label" class="month-label"></span>
+    </div>
+    <div class="actions">
+      <label class="month-picker">
+        <span class="month-picker-label">Month</span>
+        <select id="month-select"></select>
+      </label>
+      <span id="last-updated" class="last-updated"></span>
+      <button id="refresh-btn" class="btn-refresh" title="Sync latest data from HubSpot">
+        <span class="refresh-icon">&#x21bb;</span> Sync
+      </button>
+    </div>
+  </header>
+
+  <main>
+    <nav id="breadcrumb" class="breadcrumb" style="display:none"></nav>
+
+    <div id="loading" class="loading">
+      <div class="spinner"></div>
+      <p>Loading live data from HubSpot…</p>
+    </div>
+
+    <div id="error" class="error" style="display:none"></div>
+
+    <!-- DASHBOARD VIEW -->
+    <section id="view-dashboard" class="view" style="display:none">
+      <div id="kpi-section" class="kpi-grid"></div>
+
+      <!-- ENT quarterly panel — separate because ENT runs on a quarterly cadence -->
+      <div id="ent-quarterly-panel" class="ent-quarterly-panel" style="display:none">
+        <div class="ent-q-head">
+          <div>
+            <h3 id="ent-q-title">ENT Team — Quarterly</h3>
+            <p class="section-sub" id="ent-q-sub">Reported separately from monthly totals</p>
+          </div>
+          <div class="ent-q-pill" id="ent-q-pill"></div>
+        </div>
+        <div class="ent-q-grid">
+          <div class="ent-q-stat">
+            <div class="ent-q-label">Quarterly Revenue</div>
+            <div class="ent-q-value" id="ent-q-revenue"></div>
+            <div class="ent-q-sub" id="ent-q-revenue-sub"></div>
+          </div>
+          <div class="ent-q-stat">
+            <div class="ent-q-label">Quarterly Target</div>
+            <div class="ent-q-value" id="ent-q-target"></div>
+            <div class="ent-q-sub">Anthony</div>
+          </div>
+          <div class="ent-q-stat">
+            <div class="ent-q-label">Attainment</div>
+            <div class="ent-q-value" id="ent-q-attainment"></div>
+            <div class="ent-q-sub" id="ent-q-attain-sub"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="section-header">
+        <h2>Team Performance</h2>
+        <span class="section-sub">Click any team to drill in</span>
+      </div>
+      <div id="teams-grid" class="teams-grid"></div>
+    </section>
+
+    <!-- TEAM VIEW -->
+    <section id="view-team" class="view" style="display:none">
+      <div class="view-header">
+        <h2 id="team-view-title"></h2>
+        <span id="team-view-sub" class="section-sub"></span>
+      </div>
+      <div id="team-kpis" class="kpi-grid"></div>
+
+      <div class="card-panel">
+        <div class="panel-header">
+          <div>
+            <h2>Rep Performance Table</h2>
+            <p class="section-sub">Click any rep for full details</p>
+          </div>
+        </div>
+        <div class="table-wrap scroll-x">
+          <table class="data-table perf-table">
+            <thead>
+              <tr>
+                <th class="col-rep">Rep</th>
+                <th class="num">Revenue</th>
+                <th class="num">Won</th>
+                <th class="num">Lost</th>
+                <th class="num">Open</th>
+                <th class="num">Total Opps</th>
+                <th class="num">Opp→Win %</th>
+                <th class="num">Avg Deal</th>
+                <th class="num">Avg Deal Age</th>
+                <th class="num">MQL</th>
+                <th class="num">Pipeline</th>
+                <th class="num">Achieved</th>
+                <th class="num">Target</th>
+              </tr>
+            </thead>
+            <tbody id="rep-perf-tbody"></tbody>
+            <tfoot>
+              <tr id="rep-perf-tfoot"></tr>
+            </tfoot>
+          </table>
+        </div>
+      </div>
+
+      <div id="am-coverage-panel" class="card-panel" style="display:none">
+        <div class="panel-header">
+          <div>
+            <h2>AM Account Coverage</h2>
+            <p class="section-sub">
+              Account-level coverage for each AM rep — total companies owned,
+              Closed Won deal count, % Closed Won, and Closed Won deals
+              (any time) with no activity in the selected month
+            </p>
+          </div>
+        </div>
+        <div class="table-wrap scroll-x">
+          <table class="data-table am-table">
+            <thead>
+              <tr>
+                <th class="col-rep">Rep</th>
+                <th class="num">Total Companies</th>
+                <th class="num">Deals Won</th>
+                <th class="num">% Closed Won</th>
+                <th class="num">Closed Won — No Activity</th>
+              </tr>
+            </thead>
+            <tbody id="am-coverage-tbody"></tbody>
+            <tfoot><tr id="am-coverage-tfoot"></tr></tfoot>
+          </table>
+        </div>
+      </div>
+
+      <div id="am-dealtype-panel" class="card-panel" style="display:none">
+        <div class="panel-header">
+          <div>
+            <h2>AM Deal Type Breakdown</h2>
+            <p class="section-sub">
+              Closed Won deals by deal type — for each AM rep in the selected month
+            </p>
+          </div>
+        </div>
+        <div class="table-wrap scroll-x">
+          <table class="data-table am-dealtype-table" id="am-dealtype-table">
+            <thead><tr id="am-dealtype-thead"></tr></thead>
+            <tbody id="am-dealtype-tbody"></tbody>
+            <tfoot><tr id="am-dealtype-tfoot"></tr></tfoot>
+          </table>
+        </div>
+      </div>
+
+      <div id="lead-status-panel" class="card-panel" style="display:none">
+        <div class="panel-header">
+          <div>
+            <h2>Lead Status Analysis</h2>
+            <p class="section-sub">
+              MQLs assigned this month, broken down by lead status × rep
+            </p>
+          </div>
+        </div>
+        <div class="table-wrap scroll-x">
+          <table class="data-table lead-status-table" id="lead-status-table">
+            <thead><tr id="lead-status-thead"></tr></thead>
+            <tbody id="lead-status-tbody"></tbody>
+            <tfoot><tr id="lead-status-tfoot"></tr></tfoot>
+          </table>
+        </div>
+      </div>
+
+      <div id="smb-unq-panel" class="card-panel" style="display:none">
+        <div class="panel-header">
+          <div>
+            <h2>SMB — Unqualified MQLs by Rep</h2>
+            <p class="section-sub">Count of MQL contacts in "Unqualified" lead status, per rep, for the selected month.</p>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table class="data-table">
+            <thead>
+              <tr><th>Rep</th><th class="num">Unqualified Count</th></tr>
+            </thead>
+            <tbody id="smb-unq-tbody"></tbody>
+            <tfoot><tr id="smb-unq-tfoot"></tr></tfoot>
+          </table>
+        </div>
+      </div>
+
+      <div id="team-rolling-panel" class="card-panel" style="display:none">
+        <div class="panel-header">
+          <div>
+            <h2>Rolling 90-Day Funnel</h2>
+            <p class="section-sub" id="team-rolling-sub">Past 90 days · MQL → Opp → Won</p>
+          </div>
+        </div>
+        <div class="table-wrap fit-screen">
+          <table class="data-table funnel-blue-table compact-funnel">
+            <thead>
+              <tr>
+                <th class="col-rep">Rep</th>
+                <th class="num">MQLs</th>
+                <th class="num">Opps<br/>Created</th>
+                <th class="num">MQL → Opp %</th>
+                <th class="num">Closed<br/>Won</th>
+                <th class="num">Opp → Won %</th>
+                <th class="num">MQL → Won %</th>
+              </tr>
+            </thead>
+            <tbody id="team-rolling-tbody"></tbody>
+            <tfoot><tr id="team-rolling-tfoot"></tr></tfoot>
+          </table>
+        </div>
+      </div>
+
+      <div id="lost-theme-panel" class="card-panel" style="display:none">
+        <div class="panel-header">
+          <div>
+            <h2>Lost — Reasons</h2>
+            <p class="section-sub">Categorized values from the "Lost Deal Reason" property.</p>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Reason</th>
+                <th class="num">Count</th>
+                <th class="num">% of Lost</th>
+              </tr>
+            </thead>
+            <tbody id="lost-theme-tbody"></tbody>
+            <tfoot><tr id="lost-theme-tfoot"></tr></tfoot>
+          </table>
+        </div>
+      </div>
+
+      <div class="card-panel">
+        <div class="panel-header">
+          <div>
+            <h2>MQL to Revenue Conversion Funnel (All Reps)</h2>
+            <p class="section-sub">From MQL handoff to closed-won — this month</p>
+          </div>
+        </div>
+        <div class="table-wrap fit-screen">
+          <table class="data-table funnel-table compact-funnel">
+            <thead>
+              <tr>
+                <th class="col-rep">Rep</th>
+                <th class="num">MQLs</th>
+                <th class="num">Opps<br/>Created</th>
+                <th class="num">Closed<br/>Won</th>
+                <th class="num">MQL → Opp %</th>
+                <th class="num">Opp → Won %</th>
+                <th class="num">MQL → Won %</th>
+              </tr>
+            </thead>
+            <tbody id="rep-funnel-tbody"></tbody>
+            <tfoot>
+              <tr id="rep-funnel-tfoot"></tr>
+            </tfoot>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- REP VIEW -->
+    <section id="view-rep" class="view" style="display:none">
+      <div class="rep-hero">
+        <div class="rep-hero-left">
+          <div class="rep-avatar" id="rep-avatar"></div>
+          <div>
+            <h2 id="rep-view-title"></h2>
+            <span id="rep-view-sub" class="rep-sub"></span>
+          </div>
+        </div>
+        <div class="rep-hero-right">
+          <div class="rep-pill" id="rep-attain-pill"></div>
+          <div class="rep-progress">
+            <div class="progress-bar">
+              <div class="progress-fill" id="rep-progress-fill"></div>
+            </div>
+            <div class="progress-meta" id="rep-progress-meta"></div>
+          </div>
+        </div>
+      </div>
+
+      <div id="rep-kpis" class="kpi-grid"></div>
+
+      <div id="rep-audit-panel" class="card-panel" style="display:none">
+        <div class="panel-header">
+          <div>
+            <h2 id="rep-audit-title">Auditing</h2>
+            <p class="section-sub">Manual audit observations for this rep.</p>
+          </div>
+        </div>
+        <ul id="rep-audit-list" class="audit-list"></ul>
+      </div>
+
+      <div id="rep-activity-panel" class="card-panel" style="display:none">
+        <div class="panel-header">
+          <div>
+            <h2>Activity — Goals vs Actual</h2>
+            <p class="section-sub">Calls, Emails, and Talk Time goals vs actual for the MBR period.</p>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Metric</th>
+                <th class="num">Goal</th>
+                <th class="num">Actual</th>
+                <th class="num">% Attained</th>
+              </tr>
+            </thead>
+            <tbody id="rep-activity-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div id="rep-lost-panel" class="card-panel" style="display:none">
+        <div class="panel-header">
+          <div>
+            <h2>Lost — Reasons</h2>
+            <p class="section-sub">Categorized values from the "Lost Deal Reason" property — for this rep.</p>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Reason</th>
+                <th class="num">Count</th>
+                <th class="num">% of Lost</th>
+              </tr>
+            </thead>
+            <tbody id="rep-lost-tbody"></tbody>
+            <tfoot><tr id="rep-lost-tfoot"></tr></tfoot>
+          </table>
+        </div>
+      </div>
+
+      <div id="rep-funnel-panel" class="card-panel" style="display:none">
+        <div class="panel-header">
+          <div>
+            <h2>MQL → Revenue Conversion Funnel</h2>
+            <p class="section-sub" id="rep-funnel-sub">For the selected month</p>
+          </div>
+        </div>
+        <div class="table-wrap fit-screen">
+          <table class="data-table funnel-blue-table compact-funnel" id="rep-view-funnel-table">
+            <thead>
+              <tr id="rep-view-funnel-thead">
+                <th class="col-rep">Rep</th>
+                <th class="num">MQLs</th>
+                <th class="num">Opps<br/>Created</th>
+                <th class="num">MQL → Opp %</th>
+                <th class="num">Closed<br/>Won</th>
+                <th class="num">Opp → Won %</th>
+                <th class="num">MQL → Won %</th>
+              </tr>
+            </thead>
+            <tbody id="rep-view-funnel-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div id="rep-rolling-panel" class="card-panel" style="display:none">
+        <div class="panel-header">
+          <div>
+            <h2>Rolling 90-Day Funnel</h2>
+            <p class="section-sub" id="rep-rolling-sub">Past 90 days · MQL → Opp → Won</p>
+          </div>
+        </div>
+        <div class="table-wrap fit-screen">
+          <table class="data-table compact-funnel">
+            <thead>
+              <tr>
+                <th>Rep</th>
+                <th class="num">MQLs</th>
+                <th class="num">Opps<br/>Created</th>
+                <th class="num">MQL → Opp %</th>
+                <th class="num">Closed<br/>Won</th>
+                <th class="num">Opp → Won %</th>
+                <th class="num">MQL → Won %</th>
+              </tr>
+            </thead>
+            <tbody id="rep-rolling-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div id="rep-trends-panel" class="card-panel" style="display:none">
+        <div class="panel-header">
+          <div>
+            <h2>Trailing 3-Month Trend</h2>
+            <p class="section-sub">Revenue and MQLs from the previous 3 months.</p>
+          </div>
+        </div>
+        <div class="trend-charts">
+          <div class="trend-chart">
+            <div class="trend-title">Revenue</div>
+            <div id="rep-trend-revenue" class="trend-bars"></div>
+          </div>
+          <div class="trend-chart">
+            <div class="trend-title">MQLs Assigned</div>
+            <div id="rep-trend-mql" class="trend-bars"></div>
+          </div>
+        </div>
+      </div>
+
+      <div id="rep-discount-panel" class="card-panel" style="display:none">
+        <div class="panel-header">
+          <div>
+            <h2>Discount Analysis</h2>
+            <p class="section-sub">Closed Won deals with discount applied.</p>
+          </div>
+        </div>
+        <div class="table-wrap scroll-x">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Deal Name</th>
+                <th class="num">Total Amount</th>
+                <th class="num">Discount Amount</th>
+                <th class="num">After Discount</th>
+                <th class="num">% Rate</th>
+              </tr>
+            </thead>
+            <tbody id="rep-discount-tbody"></tbody>
+            <tfoot><tr id="rep-discount-tfoot"></tr></tfoot>
+          </table>
+          <p class="discount-avg" id="rep-discount-avg"></p>
+        </div>
+      </div>
+
+      <div id="rep-countries-panel" class="card-panel" style="display:none">
+        <div class="panel-header">
+          <h2>Closed Won by Country</h2>
+          <p class="section-sub">
+            Country pulled from each deal's associated contact (Select Country / Country/Region)
+          </p>
+        </div>
+        <div id="rep-countries-pills" class="country-pills"></div>
+      </div>
+
+      <div class="rep-deal-section card-panel">
+        <div class="rep-deals-header">
+          <div>
+            <h2 id="rep-deals-heading">Closed Won (This Month)</h2>
+            <p class="section-sub" id="rep-deals-summary"></p>
+          </div>
+          <div class="tabs" id="rep-deal-tabs">
+            <button class="tab active" data-tab="closed_won_deals">Closed Won</button>
+            <button class="tab" data-tab="open_pipeline_deals">Open Pipeline</button>
+            <button class="tab" data-tab="deals_lost_deals">Deals Lost</button>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table id="rep-deals-table" class="data-table">
+            <thead><tr id="rep-deals-thead"></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- Lost description theme sub-modal -->
+  <div id="theme-modal" class="modal" style="display:none">
+    <div class="modal-content modal-md">
+      <div class="modal-header">
+        <div>
+          <h2 id="theme-modal-title">Lost Theme</h2>
+          <p class="modal-sub" id="theme-modal-sub"></p>
+        </div>
+        <button id="close-theme" class="btn-close" aria-label="Close">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="table-wrap">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Description</th>
+                <th>Deal</th>
+                <th>Owner</th>
+                <th class="num">Amount</th>
+                <th>Close Date</th>
+              </tr>
+            </thead>
+            <tbody id="theme-modal-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Deal Insights sub-modal (activity timeline / why-lost) -->
+  <div id="insights-modal" class="modal" style="display:none">
+    <div class="modal-content modal-md">
+      <div class="modal-header">
+        <div>
+          <h2 id="insights-title">Deal Insights</h2>
+          <p class="modal-sub" id="insights-sub"></p>
+        </div>
+        <button id="close-insights" class="btn-close" aria-label="Close">&times;</button>
+      </div>
+      <div class="modal-body" id="insights-body">
+        <div class="insights-loading">
+          <div class="spinner"></div>
+          <p>Loading activity from HubSpot…</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Generic deal drilldown modal -->
+  <div id="drilldown-modal" class="modal" style="display:none">
+    <div class="modal-content">
+      <div class="modal-header">
+        <div>
+          <h2 id="drilldown-title">Deals</h2>
+          <p class="modal-sub" id="drilldown-summary"></p>
+        </div>
+        <button id="close-modal" class="btn-close" aria-label="Close">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="modal-controls">
+          <input id="drilldown-search" type="text" placeholder="Search by deal name or owner..." />
+          <select id="drilldown-team-filter">
+            <option value="">All teams</option>
+            <option value="SMB">SMB</option>
+            <option value="AM">AM</option>
+            <option value="ENT">ENT</option>
+          </select>
+        </div>
+        <div class="table-wrap scroll-x">
+          <table id="drilldown-table" class="data-table">
+            <thead><tr id="drilldown-thead-row"></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/script.js"></script>
+</body>
+</html>
