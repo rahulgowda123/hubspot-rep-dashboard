@@ -12,10 +12,30 @@ import os
 import re
 import html as html_lib
 
+def _load_dotenv_inline():
+    """Best-effort .env loader so `python app.py` (dev mode) finds the token
+    without needing python-dotenv installed. The PyInstaller launcher also
+    loads .env before importing app, this is the dev-mode fallback."""
+    env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+    if not os.path.exists(env_path):
+        return
+    try:
+        with open(env_path, "r", encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, val = line.split("=", 1)
+                key, val = key.strip(), val.strip().strip('"').strip("'")
+                if key and key not in os.environ:
+                    os.environ[key] = val
+    except Exception:
+        pass
+
+
+_load_dotenv_inline()
 ACCESS_TOKEN = os.environ.get("HUBSPOT_TOKEN", "").strip()
 if not ACCESS_TOKEN:
-    # Don't crash at import time — the launcher loads .env first. If still
-    # missing, every HubSpot call will return an auth error and the UI shows it.
     print("[warn] HUBSPOT_TOKEN is not set. "
           "Add it to the .env file sitting next to the .exe / app.py.")
 
@@ -554,6 +574,9 @@ def fetch_mql_contacts_for_month(month_start, month_end):
     url = "https://api.hubapi.com/crm/v3/objects/contacts/search"
 
     candidate_property_sets = [
+        ["firstname", "lastname", "email", "createdate",
+         "hubspot_owner_id", "mql_type", "lifecyclestage",
+         "hubspot_team_id", "hs_lead_status", "reason", "reassigned_mql"],
         ["firstname", "lastname", "email", "createdate",
          "hubspot_owner_id", "mql_type", "lifecyclestage",
          "hubspot_team_id", "hs_lead_status", "reason"],
@@ -1555,6 +1578,13 @@ def build_dashboard(month_key=None, force=False):
         mtype = (cprops.get("mql_type") or "").strip().lower()
         if not ("business" in mtype or "personal" in mtype):
             continue
+        # Rolling 90 excludes contacts that have been explicitly reassigned.
+        # The HubSpot `reassigned_mql` property only has "Yes" and "NO" as
+        # options — anything else (empty / None) means "unknown / not yet
+        # set", which is what we want to count.
+        reassigned = (cprops.get("reassigned_mql") or "").strip().lower()
+        if reassigned in ("yes", "no"):
+            continue
         # Team is determined by who owns the contact (must map to a current rep)
         info = owner_map.get(cprops.get("hubspot_owner_id"), {})
         c_team = info.get("team")
@@ -1583,14 +1613,8 @@ def build_dashboard(month_key=None, force=False):
 
     # Stamp trends + rolling-90 onto each rep bucket; team rolling-90 too.
     trail_labels = [tm["label"] for tm in trailing_months]
-    # Manual MQL overrides for new SMB reps whose hubspot_team_id wasn't yet
-    # SMB-tagged during the rolling 90-day window (so the automatic count
-    # under-reports). These are confirmed values from the team lead.
-    ROLLING_90_MQL_OVERRIDES = {
-        "Aparajit": 8,
-        "Divyansh": 5,
-        "Sutheerth": 2,
-    }
+    # Rolling 90 is now fully dynamic — every count comes from live HubSpot
+    # data filtered by `reassigned_mql == "unknown"`. No manual overrides.
 
     # Build a parallel list of trailing month keys (YYYY-MM) so we can look
     # up per-month revenue goals from REP_MONTHLY_REVENUE_GOALS.
@@ -1607,8 +1631,7 @@ def build_dashboard(month_key=None, force=False):
             goals_map = REP_MONTHLY_REVENUE_GOALS.get(rn, {})
             rb["trend_revenue_goals"] = [goals_map.get(k, 0) for k in trail_keys]
             r90 = rolling_per_rep.get(rn, {"mql": 0, "opps": 0, "won": 0})
-            mq = ROLLING_90_MQL_OVERRIDES.get(rn, r90["mql"])
-            op, wn = r90["opps"], r90["won"]
+            mq, op, wn = r90["mql"], r90["opps"], r90["won"]
             rb["rolling_90"] = {
                 "mql": mq, "opps": op, "won": wn,
                 "mql_to_opp":  (op / mq * 100) if mq else 0,
