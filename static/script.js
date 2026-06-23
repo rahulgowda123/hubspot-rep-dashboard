@@ -97,15 +97,31 @@ function renderMonthSelector() {
   selectedMonth = sel.value;
 }
 
+let _errorAutoHideTimer = null;
+
+function showTransientError(message) {
+  const errorEl = document.getElementById('error');
+  errorEl.textContent = message;
+  errorEl.style.display = 'block';
+  if (_errorAutoHideTimer) clearTimeout(_errorAutoHideTimer);
+  _errorAutoHideTimer = setTimeout(() => { errorEl.style.display = 'none'; }, 8000);
+}
+
 async function loadData(refresh = false) {
   const loading = document.getElementById('loading');
   const errorEl = document.getElementById('error');
   const btn = document.getElementById('refresh-btn');
+  const hasExistingData = !!dashboardData;
 
-  document.querySelectorAll('.view').forEach(v => v.style.display = 'none');
-  document.getElementById('breadcrumb').style.display = 'none';
-  loading.style.display = 'block';
+  // Only blank the screen on the FIRST load. On a refresh keep current data
+  // visible so a transient error doesn't wipe the dashboard.
+  if (!hasExistingData) {
+    document.querySelectorAll('.view').forEach(v => v.style.display = 'none');
+    document.getElementById('breadcrumb').style.display = 'none';
+    loading.style.display = 'block';
+  }
   errorEl.style.display = 'none';
+  if (_errorAutoHideTimer) clearTimeout(_errorAutoHideTimer);
 
   btn.disabled = true;
   btn.classList.add('loading');
@@ -116,18 +132,33 @@ async function loadData(refresh = false) {
     if (selectedMonth) params.set('month', selectedMonth);
     const url = '/api/dashboard' + (params.toString() ? '?' + params.toString() : '');
     const res = await fetch(url);
-    const json = await res.json();
+    const ctype = (res.headers.get('content-type') || '').toLowerCase();
+    let json;
+    if (!ctype.includes('application/json')) {
+      // Proxy returned an HTML error page (timeout / 502 / etc.) — don't
+      // try to parse it as JSON. Surface a friendly retry message.
+      const status = res.status || 0;
+      throw new Error(
+        status === 504 || status === 502
+          ? `Server timed out (HTTP ${status}). HubSpot took too long — click Sync to retry.`
+          : `Server returned a non-JSON response${status ? ' (HTTP ' + status + ')' : ''}. Try Sync again.`);
+    }
+    json = await res.json();
     if (!json.success) throw new Error(json.error || 'Unknown error');
     dashboardData = json.data;
     setView(viewState.view, viewState.team, viewState.rep);
-    // Refresh open drilldown modal if any
     if (document.getElementById('drilldown-modal').style.display !== 'none'
         && drilldownState.type) {
       renderDrilldown();
     }
   } catch (e) {
-    errorEl.textContent = 'Failed to load: ' + e.message;
-    errorEl.style.display = 'block';
+    if (hasExistingData) {
+      // Keep showing the previous data; just flash a non-blocking message
+      showTransientError('Sync failed: ' + e.message + '  (showing last successful data)');
+    } else {
+      errorEl.textContent = 'Failed to load: ' + e.message;
+      errorEl.style.display = 'block';
+    }
   } finally {
     loading.style.display = 'none';
     btn.disabled = false;
