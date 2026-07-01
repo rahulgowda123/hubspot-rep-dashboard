@@ -1116,10 +1116,36 @@ def build_dashboard(month_key=None, force=False):
     open_window_end = datetime(open_window_end_year, open_window_end_month, 1,
                                 tzinfo=timezone.utc)
 
+    # ---- MQL contacts: fetch ONCE for the widest window we need ----
+    # We use this same pool for: current-month MQLs, trailing 3-month trends,
+    # and the rolling 90-day funnel — bucketed in-memory below. Previously
+    # this was 3 separate paginated searches (>60s each).
+    _rolling_start_pref = month_end - timedelta(days=90)
+    _trail_start_pref = month_start
+    for _off in (3, 2, 1):
+        _y, _m = month_start.year, month_start.month - _off
+        while _m < 1:
+            _m += 12; _y -= 1
+        _cand = datetime(_y, _m, 1, tzinfo=timezone.utc)
+        if _cand < _trail_start_pref:
+            _trail_start_pref = _cand
+    _wide_start = min(month_start, _trail_start_pref, _rolling_start_pref)
+    _wide_end = month_end
     try:
-        mql_contacts = fetch_mql_contacts_for_month(month_start, month_end)
+        _all_recent_mqls = fetch_mql_contacts_for_month(_wide_start, _wide_end)
     except Exception:
-        mql_contacts = []
+        _all_recent_mqls = []
+
+    def _mqls_in_range(rs, re_):
+        """Filter the wide pool to contacts whose createdate falls in [rs, re_)."""
+        out = []
+        for c in _all_recent_mqls:
+            cdt = parse_dt((c.get("properties") or {}).get("createdate"))
+            if cdt and rs <= cdt < re_:
+                out.append(c)
+        return out
+
+    mql_contacts = _mqls_in_range(month_start, month_end)
 
     def new_rep_bucket(target):
         return {
@@ -1625,13 +1651,11 @@ def build_dashboard(month_key=None, force=False):
                 rev_by_rep_month[rep_n][tm["label"]] += amt
                 break
 
-    # MQL trend: fetch MQLs for the trailing window (Jan..Mar when viewing Apr)
+    # MQL trend: reuse the wide pool (already fetched above) instead of
+    # firing another paginated search.
     if trailing_months:
-        try:
-            trail_mqls = fetch_mql_contacts_for_month(
-                trailing_months[0]["start"], trailing_months[-1]["end"])
-        except Exception:
-            trail_mqls = []
+        trail_mqls = _mqls_in_range(trailing_months[0]["start"],
+                                     trailing_months[-1]["end"])
     else:
         trail_mqls = []
     mql_by_rep_month = defaultdict(lambda: defaultdict(int))
@@ -1659,10 +1683,8 @@ def build_dashboard(month_key=None, force=False):
     # ---- Rolling 90 days per rep ----
     rolling_end = month_end
     rolling_start = rolling_end - timedelta(days=90)
-    try:
-        rolling_mqls = fetch_mql_contacts_for_month(rolling_start, rolling_end)
-    except Exception:
-        rolling_mqls = []
+    # Reuse the wide MQL pool (same paginated search already done above)
+    rolling_mqls = _mqls_in_range(rolling_start, rolling_end)
     rolling_per_rep = defaultdict(lambda: {"mql": 0, "opps": 0, "won": 0})
     rolling_per_team = defaultdict(lambda: {"mql": 0, "opps": 0, "won": 0})
     for c in rolling_mqls:
