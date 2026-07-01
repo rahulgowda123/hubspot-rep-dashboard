@@ -28,3 +28,6 @@ Thumbs.db
 # Temp data dumps
 *.tmp
 *.cache
+
+# Disk cache for HubSpot raw data (survives restarts)
+.mbr_raw_cache.json

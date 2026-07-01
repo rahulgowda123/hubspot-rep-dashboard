@@ -7,10 +7,26 @@ from flask import Flask, jsonify, render_template, request
 import requests
 from datetime import datetime, timezone, timedelta
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
 import os
 import re
+import json
 import html as html_lib
+
+# Shared HTTP session — reuses TCP connections + HTTP keep-alive across
+# all HubSpot calls. Dramatically reduces per-request overhead.
+SESSION = requests.Session()
+SESSION.headers.update({"Content-Type": "application/json"})
+# Bigger connection pool so parallel workers don't wait on each other.
+_adapter = requests.adapters.HTTPAdapter(pool_connections=32, pool_maxsize=32)
+SESSION.mount("https://", _adapter)
+SESSION.mount("http://", _adapter)
+
+# Concurrency for parallel batch reads. HubSpot's daily rate limit is
+# 250k/day (~170 req/s max) but per-second burst is capped around 100/10s
+# for search; 6-8 concurrent workers keeps us well under that.
+BATCH_WORKERS = 8
 
 def _load_dotenv_inline():
     """Best-effort .env loader so `python app.py` (dev mode) finds the token
@@ -85,15 +101,59 @@ app = Flask(__name__, template_folder=_tpl_dir, static_folder=_static_dir)
 # ----- HubSpot helpers --------------------------------------------------------
 
 def hs_get(url, params=None):
-    r = requests.get(url, headers=HEADERS, params=params, timeout=30)
+    r = SESSION.get(url, headers=HEADERS, params=params, timeout=30)
     r.raise_for_status()
     return r.json()
 
 
 def hs_post(url, payload):
-    r = requests.post(url, headers=HEADERS, json=payload, timeout=30)
+    r = SESSION.post(url, headers=HEADERS, json=payload, timeout=30)
     r.raise_for_status()
     return r.json()
+
+
+def _parallel_batch_read(url, ids, properties, workers=BATCH_WORKERS):
+    """Run HubSpot batch/read in parallel chunks of 100. Returns the merged
+    `results` list. Silently skips chunks that error so a single 400/429
+    doesn't blow up the whole fetch."""
+    if not ids:
+        return []
+    ids = list({str(x) for x in ids})
+    chunks = [ids[i:i + 100] for i in range(0, len(ids), 100)]
+
+    def _one(chunk):
+        try:
+            return hs_post(url, {"properties": properties,
+                                 "inputs": [{"id": c} for c in chunk]}).get("results", [])
+        except requests.HTTPError:
+            return []
+
+    out = []
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        for res in ex.map(_one, chunks):
+            out.extend(res)
+    return out
+
+
+def _parallel_batch_assoc_read(url, ids, workers=BATCH_WORKERS):
+    """Same as _parallel_batch_read but for v4 batch association reads
+    (no `properties` payload — just inputs)."""
+    if not ids:
+        return []
+    ids = list({str(x) for x in ids})
+    chunks = [ids[i:i + 100] for i in range(0, len(ids), 100)]
+
+    def _one(chunk):
+        try:
+            return hs_post(url, {"inputs": [{"id": c} for c in chunk]}).get("results", [])
+        except requests.HTTPError:
+            return []
+
+    out = []
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        for res in ex.map(_one, chunks):
+            out.extend(res)
+    return out
 
 
 def fetch_pipelines():
@@ -409,51 +469,36 @@ def _do_fetch_deals(pipeline_id, properties):
 
 
 def fetch_deal_to_company_map(deal_ids):
-    """Returns {deal_id: primary_company_id} via batch association read."""
+    """Returns {deal_id: primary_company_id} via PARALLEL batch association reads."""
     if not deal_ids:
         return {}
     url = "https://api.hubapi.com/crm/v4/associations/deals/companies/batch/read"
+    results = _parallel_batch_assoc_read(url, deal_ids)
     mapping = {}
-    for i in range(0, len(deal_ids), 100):
-        batch = deal_ids[i:i + 100]
-        payload = {"inputs": [{"id": d} for d in batch]}
-        try:
-            data = hs_post(url, payload)
-        except requests.HTTPError:
-            continue
-        for result in data.get("results", []):
-            from_id = (result.get("from") or {}).get("id")
-            to_list = result.get("to") or []
-            if from_id and to_list:
-                first = to_list[0]
-                company_id = first.get("toObjectId") or first.get("id")
-                if company_id is not None:
-                    mapping[str(from_id)] = str(company_id)
+    for result in results:
+        from_id = (result.get("from") or {}).get("id")
+        to_list = result.get("to") or []
+        if from_id and to_list:
+            first = to_list[0]
+            company_id = first.get("toObjectId") or first.get("id")
+            if company_id is not None:
+                mapping[str(from_id)] = str(company_id)
     return mapping
 
 
 def fetch_company_countries(company_ids):
-    """Returns {company_id: country_string}."""
+    """Returns {company_id: country_string} via PARALLEL batch reads."""
     if not company_ids:
         return {}
     url = "https://api.hubapi.com/crm/v3/objects/companies/batch/read"
+    results = _parallel_batch_read(url, list(company_ids),
+                                    ["country", "hs_country_code"])
     out = {}
-    ids = list(set(company_ids))
-    for i in range(0, len(ids), 100):
-        batch = ids[i:i + 100]
-        payload = {
-            "properties": ["country", "hs_country_code"],
-            "inputs": [{"id": c} for c in batch],
-        }
-        try:
-            data = hs_post(url, payload)
-        except requests.HTTPError:
-            continue
-        for company in data.get("results", []):
-            cid = str(company.get("id"))
-            cprops = company.get("properties") or {}
-            raw = (cprops.get("country") or cprops.get("hs_country_code") or "").strip()
-            out[cid] = normalize_country(raw)
+    for company in results:
+        cid = str(company.get("id"))
+        cprops = company.get("properties") or {}
+        raw = (cprops.get("country") or cprops.get("hs_country_code") or "").strip()
+        out[cid] = normalize_country(raw)
     return out
 
 
@@ -481,89 +526,58 @@ def count_companies_by_owner(owner_id):
 
 
 def fetch_deal_to_contacts_map(deal_ids):
-    """Returns {deal_id: [contact_id, ...]} via batch association read."""
+    """Returns {deal_id: [contact_id, ...]} via PARALLEL batch association reads."""
     if not deal_ids:
         return {}
     url = "https://api.hubapi.com/crm/v4/associations/deals/contacts/batch/read"
+    results = _parallel_batch_assoc_read(url, deal_ids)
     mapping = {}
-    for i in range(0, len(deal_ids), 100):
-        batch = deal_ids[i:i + 100]
-        payload = {"inputs": [{"id": d} for d in batch]}
-        try:
-            data = hs_post(url, payload)
-        except requests.HTTPError:
-            continue
-        for result in data.get("results", []):
-            from_id = (result.get("from") or {}).get("id")
-            to_list = result.get("to") or []
-            ids = []
-            for t in to_list:
-                cid = t.get("toObjectId") or t.get("id")
-                if cid is not None:
-                    ids.append(str(cid))
-            if from_id and ids:
-                mapping[str(from_id)] = ids
+    for result in results:
+        from_id = (result.get("from") or {}).get("id")
+        to_list = result.get("to") or []
+        ids = []
+        for t in to_list:
+            cid = t.get("toObjectId") or t.get("id")
+            if cid is not None:
+                ids.append(str(cid))
+        if from_id and ids:
+            mapping[str(from_id)] = ids
     return mapping
 
 
-def fetch_contact_create_dates(contact_ids):
-    """Returns {contact_id: ISO createdate} for the given contacts.
-    Used to compute Avg Deal Age = close_date - primary_contact_createdate."""
+def fetch_contact_data(contact_ids):
+    """Fetch country + createdate for all contacts in ONE parallel pass.
+    Returns (countries, create_dates) — replaces the two separate fetches
+    to cut contact round-trips in half."""
     if not contact_ids:
-        return {}
+        return {}, {}
     url = "https://api.hubapi.com/crm/v3/objects/contacts/batch/read"
-    ids = list({str(c) for c in contact_ids})
-    out = {}
-    for i in range(0, len(ids), 100):
-        batch = ids[i:i + 100]
-        try:
-            data = hs_post(url, {
-                "properties": ["createdate"],
-                "inputs": [{"id": c} for c in batch],
-            })
-        except requests.HTTPError:
-            continue
-        for c in data.get("results", []):
-            cid = str(c.get("id"))
-            cd = (c.get("properties") or {}).get("createdate")
-            if cd:
-                out[cid] = cd
-    return out
+    props = ["country_list", "country", "hs_country_region_code", "createdate"]
+    results = _parallel_batch_read(url, list(contact_ids), props)
+    countries, create_dates = {}, {}
+    for c in results:
+        cid = str(c.get("id"))
+        cprops = c.get("properties") or {}
+        raw = (cprops.get("country_list")
+               or cprops.get("country")
+               or cprops.get("hs_country_region_code")
+               or "").strip()
+        norm = normalize_country(raw)
+        if norm:
+            countries[cid] = norm
+        cd = cprops.get("createdate")
+        if cd:
+            create_dates[cid] = cd
+    return countries, create_dates
 
 
+# Legacy wrappers so existing callers keep working
 def fetch_contact_countries(contact_ids):
-    """Returns {contact_id: country_string} using contact properties
-    'country_list' (Select Country) and 'country' (Country/Region) — prefers
-    the dropdown 'country_list' value when present."""
-    if not contact_ids:
-        return {}
-    url = "https://api.hubapi.com/crm/v3/objects/contacts/batch/read"
-    ids = list({str(c) for c in contact_ids})
-    out = {}
-    for i in range(0, len(ids), 100):
-        batch = ids[i:i + 100]
-        for properties in (["country_list", "country", "hs_country_region_code"],
-                           ["country", "hs_country_region_code"],
-                           ["country"]):
-            try:
-                data = hs_post(url, {
-                    "properties": properties,
-                    "inputs": [{"id": c} for c in batch],
-                })
-                for c in data.get("results", []):
-                    cid = str(c.get("id"))
-                    cprops = c.get("properties") or {}
-                    raw = (cprops.get("country_list")
-                           or cprops.get("country")
-                           or cprops.get("hs_country_region_code")
-                           or "").strip()
-                    norm = normalize_country(raw)
-                    if norm:
-                        out[cid] = norm
-                break
-            except requests.HTTPError:
-                continue
-    return out
+    return fetch_contact_data(contact_ids)[0]
+
+
+def fetch_contact_create_dates(contact_ids):
+    return fetch_contact_data(contact_ids)[1]
 
 
 def fetch_mql_contacts_for_month(month_start, month_end):
@@ -777,24 +791,79 @@ QUARTERLY_TEAMS = {"ENT"}
 
 # ----- Aggregation -----------------------------------------------------------
 
+def _disk_cache_path():
+    """Where to persist the RAW pipeline snapshot between restarts."""
+    base = os.path.dirname(os.path.abspath(__file__))
+    # PyInstaller-frozen apps should write next to the .exe, not into
+    # the temp bundle folder.
+    import sys as _sys
+    if getattr(_sys, "frozen", False):
+        base = os.path.dirname(os.path.abspath(_sys.executable))
+    return os.path.join(base, ".mbr_raw_cache.json")
+
+
+def _load_disk_cache(max_age_sec=1800):
+    """Load raw pipeline data from disk if fresh enough. Returns None on miss."""
+    try:
+        path = _disk_cache_path()
+        if not os.path.exists(path):
+            return None
+        with open(path, "r", encoding="utf-8") as f:
+            j = json.load(f)
+        if time.time() - float(j.get("timestamp", 0)) < max_age_sec:
+            return j.get("data")
+    except Exception:
+        pass
+    return None
+
+
+def _save_disk_cache(data):
+    try:
+        with open(_disk_cache_path(), "w", encoding="utf-8") as f:
+            json.dump({"timestamp": time.time(), "data": data}, f)
+    except Exception:
+        pass
+
+
 def fetch_raw_pipeline_data(force=False):
     """Fetch all the heavy HubSpot data that's the same regardless of which
     month is being viewed (deals, owners, pipelines, country enrichment).
-    Cached so switching months doesn't re-trigger the slow fetch."""
+
+    Speed improvements:
+      1. In-memory cache (fastest) — RAW_CACHE, in-process only
+      2. Disk cache (survives restarts) — .mbr_raw_cache.json next to app
+      3. Parallel top-level fetches (pipelines / owners / teams at once)
+      4. Parallel association + batch-read fetches (5-8 workers each)
+    """
     now_ts = time.time()
     if (not force and RAW_CACHE["data"] is not None
             and (now_ts - RAW_CACHE["timestamp"]) < CACHE_TTL_SECONDS):
         return RAW_CACHE["data"]
 
-    pipelines = fetch_pipelines()
-    owners = fetch_owners()
-    # Also pull deactivated/archived owners so MQL contacts owned by them
-    # still resolve to a team.
-    try:
-        owners += fetch_owners(archived=True)
-    except Exception:
-        pass
-    team_id_to_name = fetch_hubspot_team_id_to_name()
+    # Disk cache — reuse the last snapshot on process restart so users
+    # don't wait 10 min every time the .exe boots.
+    if not force:
+        disk = _load_disk_cache(max_age_sec=CACHE_TTL_SECONDS)
+        if disk:
+            RAW_CACHE["data"] = disk
+            RAW_CACHE["timestamp"] = now_ts
+            return disk
+
+    # ---- STAGE 1: fetch independent top-level lists in parallel ----
+    def _archived_owners():
+        try:
+            return fetch_owners(archived=True)
+        except Exception:
+            return []
+
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        f_pipelines = ex.submit(fetch_pipelines)
+        f_active_owners = ex.submit(fetch_owners)
+        f_archived_owners = ex.submit(_archived_owners)
+        f_teams = ex.submit(fetch_hubspot_team_id_to_name)
+        pipelines = f_pipelines.result()
+        owners = f_active_owners.result() + f_archived_owners.result()
+        team_id_to_name = f_teams.result()
 
     sales_pipeline = None
     for p in pipelines:
@@ -831,23 +900,46 @@ def fetch_raw_pipeline_data(force=False):
             "rep": rep,
         }
 
+    # ---- STAGE 2: fetch deals ----
     deals = fetch_deals_for_pipeline(sales_pipeline["id"])
     deal_ids = [d.get("id") for d in deals if d.get("id")]
-    deal_to_company = fetch_deal_to_company_map(deal_ids)
-    company_countries = fetch_company_countries(deal_to_company.values())
-    deal_to_contacts = fetch_deal_to_contacts_map(deal_ids)
+
+    # ---- STAGE 3: association reads in parallel ----
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        f_dcomp = ex.submit(fetch_deal_to_company_map, deal_ids)
+        f_dcont = ex.submit(fetch_deal_to_contacts_map, deal_ids)
+        deal_to_company = f_dcomp.result()
+        deal_to_contacts = f_dcont.result()
+
     all_contact_ids = set()
     for cids in deal_to_contacts.values():
         all_contact_ids.update(cids)
-    contact_countries = fetch_contact_countries(all_contact_ids)
-    # Primary-contact createdate map — used for Avg Deal Age = close - primary contact create
-    contact_create_dates = fetch_contact_create_dates(all_contact_ids)
 
-    # Total companies per AM rep (one search call per rep)
-    am_company_counts = {}
-    for owner_id, info in owner_map.items():
-        if info.get("team") == "AM" and info.get("rep"):
-            am_company_counts[info["rep"]] = count_companies_by_owner(owner_id)
+    # ---- STAGE 4: company countries + contact data + AM company counts in parallel ----
+    # Contact country + createdate come from the SAME endpoint — fetched together.
+    def _am_counts():
+        am_owners = [(oid, info["rep"]) for oid, info in owner_map.items()
+                     if info.get("team") == "AM" and info.get("rep")]
+        counts = {}
+
+        def _one(pair):
+            oid, rep = pair
+            return rep, count_companies_by_owner(oid)
+
+        if not am_owners:
+            return {}
+        with ThreadPoolExecutor(max_workers=min(BATCH_WORKERS, len(am_owners))) as ex:
+            for rep, cnt in ex.map(_one, am_owners):
+                counts[rep] = cnt
+        return counts
+
+    with ThreadPoolExecutor(max_workers=3) as ex:
+        f_ccountry = ex.submit(fetch_company_countries, deal_to_company.values())
+        f_contactd = ex.submit(fetch_contact_data, all_contact_ids)
+        f_amcounts = ex.submit(_am_counts)
+        company_countries = f_ccountry.result()
+        contact_countries, contact_create_dates = f_contactd.result()
+        am_company_counts = f_amcounts.result()
 
     raw = {
         "pipelines": pipelines,
@@ -865,6 +957,7 @@ def fetch_raw_pipeline_data(force=False):
     }
     RAW_CACHE["data"] = raw
     RAW_CACHE["timestamp"] = now_ts
+    _save_disk_cache(raw)
     # New raw data invalidates per-month aggregations
     MONTH_CACHE.clear()
     return raw
