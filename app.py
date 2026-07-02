@@ -29,36 +29,64 @@ SESSION.mount("http://", _adapter)
 BATCH_WORKERS = 8
 
 def _load_dotenv_inline():
-    """Best-effort .env loader so `python app.py` (dev mode) finds the token
-    without needing python-dotenv installed. The PyInstaller launcher also
-    loads .env before importing app, this is the dev-mode fallback."""
-    env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
-    if not os.path.exists(env_path):
-        return
-    try:
-        with open(env_path, "r", encoding="utf-8") as fh:
-            for line in fh:
-                line = line.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                key, val = line.split("=", 1)
-                key, val = key.strip(), val.strip().strip('"').strip("'")
-                if key and key not in os.environ:
-                    os.environ[key] = val
-    except Exception:
-        pass
+    """Best-effort .env loader — checks BOTH the source directory (dev mode)
+    AND the .exe's directory (frozen mode). Overwrites empty env vars so
+    a token in .env always wins over a blank one inherited from the shell."""
+    import sys as _sys
+    candidates = []
+    # Source-file directory (dev mode)
+    candidates.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
+    # Frozen: also look next to the .exe (the launcher does this too,
+    # but we double-check here so the token is picked up even if
+    # launcher.py somehow didn't run.)
+    if getattr(_sys, "frozen", False):
+        candidates.append(os.path.join(os.path.dirname(os.path.abspath(_sys.executable)), ".env"))
+        # PyInstaller unpacks resources to _MEIPASS
+        meipass = getattr(_sys, "_MEIPASS", None)
+        if meipass:
+            candidates.append(os.path.join(meipass, ".env"))
+    for env_path in candidates:
+        if not os.path.exists(env_path):
+            continue
+        try:
+            with open(env_path, "r", encoding="utf-8-sig") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    key, val = line.split("=", 1)
+                    key, val = key.strip(), val.strip().strip('"').strip("'")
+                    # Overwrite if the existing env var is empty — a set-but-blank
+                    # HUBSPOT_TOKEN would otherwise silently break auth.
+                    if key and (not os.environ.get(key)):
+                        os.environ[key] = val
+        except Exception:
+            pass
 
 
 _load_dotenv_inline()
+
+
+def _headers():
+    """Read the HubSpot token fresh each time so a late .env load is
+    picked up (launcher.py sets it AFTER app.py's module-level code has
+    already run, so a static HEADERS dict would capture an empty token)."""
+    # Re-run the .env loader on every request — no-op if the vars are
+    # already set, but rescues the case where the exe was launched before
+    # the .env was in place.
+    if not os.environ.get("HUBSPOT_TOKEN"):
+        _load_dotenv_inline()
+    token = (os.environ.get("HUBSPOT_TOKEN", "") or "").strip()
+    return {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+    }
+
+
 ACCESS_TOKEN = os.environ.get("HUBSPOT_TOKEN", "").strip()
 if not ACCESS_TOKEN:
-    print("[warn] HUBSPOT_TOKEN is not set. "
-          "Add it to the .env file sitting next to the .exe / app.py.")
-
-HEADERS = {
-    "Authorization": f"Bearer {ACCESS_TOKEN}",
-    "Content-Type": "application/json",
-}
+    print("[warn] HUBSPOT_TOKEN is not set at import time — the launcher "
+          "loads .env next; _headers() re-reads on each request.")
 
 # Individual rep targets in USD (per month).
 # Keys must be a substring of the HubSpot owner's display name (case-insensitive).
@@ -101,13 +129,13 @@ app = Flask(__name__, template_folder=_tpl_dir, static_folder=_static_dir)
 # ----- HubSpot helpers --------------------------------------------------------
 
 def hs_get(url, params=None):
-    r = SESSION.get(url, headers=HEADERS, params=params, timeout=30)
+    r = SESSION.get(url, headers=_headers(), params=params, timeout=30)
     r.raise_for_status()
     return r.json()
 
 
 def hs_post(url, payload):
-    r = SESSION.post(url, headers=HEADERS, json=payload, timeout=30)
+    r = SESSION.post(url, headers=_headers(), json=payload, timeout=30)
     r.raise_for_status()
     return r.json()
 
