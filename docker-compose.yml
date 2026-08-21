@@ -1,0 +1,14 @@
+services:
+  hubspot-dashboard:
+    build: .
+    container_name: hubspot-dashboard
+    restart: always
+    ports:
+      - "127.0.0.1:3010:5000"
+    env_file:
+      - .env
+    volumes:
+      - mbr_cache:/tmp/mbr_cache
+
+volumes:
+  mbr_cache:

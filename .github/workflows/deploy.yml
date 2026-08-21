@@ -1,0 +1,91 @@
+name: Deploy to production
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}   # manual re-run of the current commit, no new push needed
+
+permissions:
+  contents: read   # this workflow only ever reads the repo (checkout) and deploys via SSH; it never pushes back to git
+
+jobs:
+  # ---------------------------------------------------------------------
+  # 1. Syntax check first. Fails fast, touches nothing on the server.
+  # ---------------------------------------------------------------------
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Python syntax check
+        run: python -m compileall -q .
+
+      - name: Shell syntax check (remote deploy script)
+        run: bash -n .github/scripts/deploy-remote.sh
+
+  # ---------------------------------------------------------------------
+  # 2. Deploy. Only runs if lint passed.
+  # ---------------------------------------------------------------------
+  deploy:
+    needs: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Set up SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$SSH_PRIVATE_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -p "$SSH_PORT" "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+      # ---------------------------------------------------------------
+      # Package the release straight from git and stream it to the
+      # server with `git archive` — no `git pull`, no git needed on the
+      # server, and it overlays only tracked files. Untracked files that
+      # already live in the deploy directory (.env, .bak files,
+      # __pycache__, etc.) are never touched or deleted.
+      # ---------------------------------------------------------------
+      - name: Package and ship release (git archive overlay, no server-side git)
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+        run: |
+          git archive --format=tar HEAD | \
+            ssh -p "$SSH_PORT" -i ~/.ssh/deploy_key "$SSH_USER@$SSH_HOST" \
+              "tar -x -C /opt/hubspot-rep-dashboard"
+
+      # ---------------------------------------------------------------
+      # No database step: this app has no database (confirmed against
+      # the running containers on the server — only a cache volume).
+      # If a database is ever added, a pre-deploy backup step belongs
+      # here, using a real confirmed-working dump command, before this
+      # build step, refusing to proceed if the backup file is
+      # suspiciously small or empty.
+      # ---------------------------------------------------------------
+
+      # ---------------------------------------------------------------
+      # Build the new image, then swap and health-check, then roll back
+      # automatically on any failure. All of this logic lives in
+      # .github/scripts/deploy-remote.sh (lint-checked in the job above)
+      # so it can be reviewed and tested like any other code.
+      # ---------------------------------------------------------------
+      - name: Build, deploy, health-check, auto-rollback on failure
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+        run: |
+          ssh -p "$SSH_PORT" -i ~/.ssh/deploy_key "$SSH_USER@$SSH_HOST" 'bash -s' \
+            < .github/scripts/deploy-remote.sh
