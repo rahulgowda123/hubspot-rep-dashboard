@@ -83,6 +83,28 @@ def _headers():
     }
 
 
+def _hotjar_site_id():
+    """Hotjar Site ID for session recording, read fresh on every request.
+
+    Deliberately lazy for the same reason _headers() is: launcher.py loads .env
+    AFTER app.py's module-level code has already run, so a module-level constant
+    would capture a blank value and Hotjar would stay off even when configured.
+
+    Returns "" for anything that is not a real ID -- unset, blank, or an
+    unsubstituted "__PLACEHOLDER__" left by a packaging step. Blank means Hotjar
+    is fully off: no script is requested and no session is recorded.
+
+    Not a secret. The ID ships inside client-side JavaScript that any visitor can
+    read, so it belongs in a plain variable, never a secret store.
+    """
+    if not os.environ.get("HOTJAR_SITE_ID"):
+        _load_dotenv_inline()
+    raw = (os.environ.get("HOTJAR_SITE_ID", "") or "").strip()
+    if not raw or re.fullmatch(r"__.*__", raw):
+        return ""
+    return raw
+
+
 ACCESS_TOKEN = os.environ.get("HUBSPOT_TOKEN", "").strip()
 if not ACCESS_TOKEN:
     print("[warn] HUBSPOT_TOKEN is not set at import time — the launcher "
@@ -1894,7 +1916,9 @@ def list_available_months(count=18):
 
 @app.route("/")
 def index():
-    return render_template("index.html")
+    # hotjar_site_id is resolved per request, so editing the .env next to the .exe
+    # switches recording on or off on the next page load -- no rebuild needed.
+    return render_template("index.html", hotjar_site_id=_hotjar_site_id())
 
 
 def fetch_deal_insights(deal_id):
