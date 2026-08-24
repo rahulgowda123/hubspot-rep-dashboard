@@ -2097,10 +2097,26 @@ def api_months():
 
 
 if __name__ == "__main__":
+    # MBR_HOST and MBR_PORT are both documented in README.md's environment
+    # table but were previously ignored here, so dev mode always bound
+    # 0.0.0.0 -- exposing the dashboard, and the HubSpot token it holds in
+    # memory, to everyone on the local network. Loopback is the documented
+    # default; set MBR_HOST=0.0.0.0 explicitly to opt into network access.
+    host = (os.environ.get("MBR_HOST") or "127.0.0.1").strip()
+    raw_port = (os.environ.get("MBR_PORT") or "").strip()
+    try:
+        port = int(raw_port) if raw_port else 5000
+    except ValueError:
+        print(f"[warn] MBR_PORT={raw_port!r} is not a number - falling back to 5000")
+        port = 5000
+
+    shown = "localhost" if host in ("127.0.0.1", "0.0.0.0", "") else host
     print("=" * 60)
     print(" MBR Dashboard - starting server")
     print("=" * 60)
-    print(" Open in browser: http://localhost:5000")
+    print(f" Open in browser: http://{shown}:{port}")
+    if host == "0.0.0.0":
+        print(" [warn] MBR_HOST=0.0.0.0 - reachable by anyone on your network")
     print(" Press Ctrl+C to stop")
     print("=" * 60)
-    app.run(debug=False, host="0.0.0.0", port=5000)
+    app.run(debug=False, host=host, port=port)
