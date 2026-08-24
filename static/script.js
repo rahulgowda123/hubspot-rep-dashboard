@@ -525,7 +525,7 @@ function renderSmbUnqualified(teamName, reps) {
           <span class="unq-reason-count">${fmtNum(rs.count)}</span>
         </div>
         ${rs.contacts && rs.contacts.length ? `
-          <div class="unq-reason-contacts">
+          <div class="unq-reason-contacts" data-hj-suppress>
             ${rs.contacts.map(c => `<span class="unq-contact-chip" title="${escapeHtml(c.email||'')}">${escapeHtml(c.name)}</span>`).join('')}
           </div>` : ''}
       </div>
@@ -681,9 +681,9 @@ function openThemeModal(idx) {
   (t.items || []).forEach(it => {
     const tr = document.createElement('tr');
     tr.innerHTML = `
-      <td style="white-space:pre-wrap">${escapeHtml(it.description)}</td>
-      <td>${escapeHtml(it.deal_name || '-')}</td>
-      <td>${escapeHtml(it.owner || '-')}</td>
+      <td style="white-space:pre-wrap" data-hj-suppress>${escapeHtml(it.description)}</td>
+      <td data-hj-suppress>${escapeHtml(it.deal_name || '-')}</td>
+      <td data-hj-suppress>${escapeHtml(it.owner || '-')}</td>
       <td class="num">${fmtUSD(it.amount || 0)}</td>
       <td>${escapeHtml(it.close_date || '-')}</td>
     `;
@@ -1056,7 +1056,7 @@ function renderRepAudit(rep) {
         deals.forEach(d => {
           const amount = d.amount ? ` · $${Number(d.amount).toLocaleString('en-US',{maximumFractionDigits:0})}` : '';
           const meta = d.meta ? ` <span class="audit-deal-meta">(${escapeHtml(d.meta)})</span>` : '';
-          html += `<li class="audit-deal-item"><span class="audit-deal-name">${escapeHtml(d.name)}</span>${amount}${meta}</li>`;
+          html += `<li class="audit-deal-item"><span class="audit-deal-name" data-hj-suppress>${escapeHtml(d.name)}</span>${amount}${meta}</li>`;
         });
         html += '</ul>';
       }
@@ -1275,7 +1275,7 @@ function renderRepDiscount(rep) {
   deals.forEach(d => {
     const tr = document.createElement('tr');
     tr.innerHTML = `
-      <td>${escapeHtml(d.name)}</td>
+      <td data-hj-suppress>${escapeHtml(d.name)}</td>
       <td class="num">${fmtUSD(d.total_amount)}</td>
       <td class="num">${fmtUSD(d.discount_amount)}</td>
       <td class="num">${fmtUSD(d.after_discount_amount)}</td>
@@ -1346,14 +1346,14 @@ function renderRepDealsTable(rep) {
           : '-');
     const tr = document.createElement('tr');
     tr.innerHTML = `
-      <td class="col-deal" title="${escapeHtml(d.name)}">${escapeHtml(d.name)}</td>
+      <td class="col-deal" title="${escapeHtml(d.name)}" data-hj-suppress>${escapeHtml(d.name)}</td>
       <td class="num col-amount">${fmtUSD(d.amount)}</td>
       <td class="col-stage"><span class="stage-tag">${escapeHtml(d.stage || '-')}</span></td>
       <td>${escapeHtml(d.country || '-')}</td>
       <td class="col-date">${d.create_date || '-'}</td>
       <td class="col-date">${d.close_date || '-'}</td>
       <td class="num col-age">${ageDays}</td>
-      ${showLostReason ? `<td title="${escapeHtml(d.lost_reason || '')}">${escapeHtml(d.lost_reason || '-')}</td>` : ''}
+      ${showLostReason ? `<td title="${escapeHtml(d.lost_reason || '')}" data-hj-suppress>${escapeHtml(d.lost_reason || '-')}</td>` : ''}
     `;
     tbody.appendChild(tr);
   });
@@ -1494,6 +1494,7 @@ function renderDrilldown() {
         td.innerHTML = display;
         if (col.key === 'name') {
           td.title = String(d.name || '');
+          td.setAttribute('data-hj-suppress', '');
           if (isLost) {
             td.innerHTML = `<span class="link-cell">${escapeHtml(d.name)} <span class="link-arrow">↗</span></span>`;
           }
@@ -1576,7 +1577,7 @@ function renderDealInsights(deal, data) {
   const lostReasonHTML = data.closed_lost_reason
     ? `<div class="lost-reason">
          <div class="lost-reason-label">Closed Lost Reason</div>
-         <div class="lost-reason-value">${escapeHtml(data.closed_lost_reason)}</div>
+         <div class="lost-reason-value" data-hj-suppress>${escapeHtml(data.closed_lost_reason)}</div>
        </div>`
     : `<div class="lost-reason muted">
          <div class="lost-reason-label">Closed Lost Reason</div>
@@ -1635,7 +1636,7 @@ function renderDealInsights(deal, data) {
         ? `<div class="tl-pills">${metaPills.map(p => `<span class="tl-pill">${p}</span>`).join('')}</div>`
         : '';
       const bodyHTML = it.body
-        ? `<div class="tl-body">${escapeHtml(it.body)}${it.body_truncated ? ' …' : ''}</div>`
+        ? `<div class="tl-body" data-hj-suppress>${escapeHtml(it.body)}${it.body_truncated ? ' …' : ''}</div>`
         : '';
       return `
         <div class="tl-item tl-${it.type}">

@@ -5,6 +5,16 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>MBR Dashboard</title>
   <link rel="stylesheet" href="/static/style.css" />
+
+  <!-- Analytics config, rendered server-side from the HOTJAR_SITE_ID environment
+       variable on every request. tojson emits a properly quoted JS literal, so a
+       junk value cannot break out of the string. Blank = Hotjar fully off. -->
+  <script>
+    window.__APP_CONFIG__ = { hotjarSiteId: {{ hotjar_site_id|default('', true)|tojson }} };
+  </script>
+  <!-- Loaded here, ahead of static/script.js, so the hj() queue exists before any
+       dashboard code runs. Self-initialising; no-ops when the ID is blank. -->
+  <script src="/static/hotjar.js"></script>
 </head>
 <body>
   <header>
@@ -511,7 +521,7 @@
     <div class="modal-content modal-md">
       <div class="modal-header">
         <div>
-          <h2 id="insights-title">Deal Insights</h2>
+          <h2 id="insights-title" data-hj-suppress>Deal Insights</h2>
           <p class="modal-sub" id="insights-sub"></p>
         </div>
         <button id="close-insights" class="btn-close" aria-label="Close">&times;</button>
@@ -537,7 +547,7 @@
       </div>
       <div class="modal-body">
         <div class="modal-controls">
-          <input id="drilldown-search" type="text" placeholder="Search by deal name or owner..." />
+          <input id="drilldown-search" type="text" placeholder="Search by deal name or owner..." data-hj-suppress />
           <select id="drilldown-team-filter">
             <option value="">All teams</option>
             <option value="SMB">SMB</option>
