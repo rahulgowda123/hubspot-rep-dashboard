@@ -83,6 +83,28 @@ def _headers():
     }
 
 
+def _hotjar_site_id():
+    """Hotjar Site ID for session recording, read fresh on every request.
+
+    Deliberately lazy for the same reason _headers() is: launcher.py loads .env
+    AFTER app.py's module-level code has already run, so a module-level constant
+    would capture a blank value and Hotjar would stay off even when configured.
+
+    Returns "" for anything that is not a real ID -- unset, blank, or an
+    unsubstituted "__PLACEHOLDER__" left by a packaging step. Blank means Hotjar
+    is fully off: no script is requested and no session is recorded.
+
+    Not a secret. The ID ships inside client-side JavaScript that any visitor can
+    read, so it belongs in a plain variable, never a secret store.
+    """
+    if not os.environ.get("HOTJAR_SITE_ID"):
+        _load_dotenv_inline()
+    raw = (os.environ.get("HOTJAR_SITE_ID", "") or "").strip()
+    if not raw or re.fullmatch(r"__.*__", raw):
+        return ""
+    return raw
+
+
 ACCESS_TOKEN = os.environ.get("HUBSPOT_TOKEN", "").strip()
 if not ACCESS_TOKEN:
     print("[warn] HUBSPOT_TOKEN is not set at import time — the launcher "
@@ -1894,7 +1916,9 @@ def list_available_months(count=18):
 
 @app.route("/")
 def index():
-    return render_template("index.html")
+    # hotjar_site_id is resolved per request, so editing the .env next to the .exe
+    # switches recording on or off on the next page load -- no rebuild needed.
+    return render_template("index.html", hotjar_site_id=_hotjar_site_id())
 
 
 def fetch_deal_insights(deal_id):
@@ -2097,10 +2121,26 @@ def api_months():
 
 
 if __name__ == "__main__":
+    # MBR_HOST and MBR_PORT are both documented in README.md's environment
+    # table but were previously ignored here, so dev mode always bound
+    # 0.0.0.0 -- exposing the dashboard, and the HubSpot token it holds in
+    # memory, to everyone on the local network. Loopback is the documented
+    # default; set MBR_HOST=0.0.0.0 explicitly to opt into network access.
+    host = (os.environ.get("MBR_HOST") or "127.0.0.1").strip()
+    raw_port = (os.environ.get("MBR_PORT") or "").strip()
+    try:
+        port = int(raw_port) if raw_port else 5000
+    except ValueError:
+        print(f"[warn] MBR_PORT={raw_port!r} is not a number - falling back to 5000")
+        port = 5000
+
+    shown = "localhost" if host in ("127.0.0.1", "0.0.0.0", "") else host
     print("=" * 60)
     print(" MBR Dashboard - starting server")
     print("=" * 60)
-    print(" Open in browser: http://localhost:5000")
+    print(f" Open in browser: http://{shown}:{port}")
+    if host == "0.0.0.0":
+        print(" [warn] MBR_HOST=0.0.0.0 - reachable by anyone on your network")
     print(" Press Ctrl+C to stop")
     print("=" * 60)
-    app.run(debug=False, host="0.0.0.0", port=5000)
+    app.run(debug=False, host=host, port=port)

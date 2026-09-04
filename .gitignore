@@ -1,6 +1,8 @@
 # Secrets — HubSpot Private App token lives here, never commit
 .env
 .env.*
+# ...but the template is documentation, not a secret -- keep it tracked.
+!.env.example
 *.local
 
 # PyInstaller build artifacts
