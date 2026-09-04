@@ -1,0 +1,81 @@
+# Ported 1:1 from .github/workflows/deploy.yml. Same two stages, same order,
+# same commands/flags, same rollback semantics (which live entirely inside
+# .github/scripts/deploy-remote.sh, reused here UNCHANGED and at its existing
+# path). Comments below mark every point where Bitbucket forced a difference.
+#
+# - `actions/checkout` has no equivalent: Bitbucket clones the repo before
+#   every step automatically. Removed.
+# - `permissions: contents: read` has no Bitbucket equivalent. Dropped.
+# - The GitHub deploy job's `fetch-depth: 1` is intentionally NOT reproduced,
+#   and no `clone: depth:` is set anywhere below. Bitbucket's "Rerun" pins a
+#   step to a specific commit sha and does `git reset --hard <sha>` against
+#   whatever was cloned; a shallow (depth 1, or any pinned depth) clone can't
+#   resolve a non-tip sha and Rerun dies with "Could not parse object". Left
+#   at Bitbucket's default clone behavior everywhere.
+# - No docker / `docker compose` command runs on the Bitbucket runner itself
+#   anywhere in this pipeline: `docker compose build`/`up` only ever run over
+#   SSH on the remote deploy server, inside deploy-remote.sh (unchanged). So
+#   the "docker compose missing on Bitbucket runners" pitfall does not apply
+#   here and no compose-binary-download workaround was added.
+# - `$GITHUB_OUTPUT`, `$GITHUB_STEP_SUMMARY`, `if: always()`, and
+#   `${{ github.run_id }}` are not used anywhere in the source workflow, so
+#   none of those mappings apply — nothing to translate.
+# - Only one toolchain (Python) exists in this repo — no pom.xml/build.gradle/
+#   package.json anywhere — so there is no parallel lint stage and the
+#   `fail-fast: false` guidance for parallel lint steps does not apply.
+# - Lint step is pinned to `python:3.11-slim` (matching Dockerfile's
+#   `FROM python:3.11-slim`) instead of GitHub's floating `python-version:
+#   '3.x'` from actions/setup-python — deliberate, to match the project's
+#   real runtime version per review instructions.
+# - SSH_PRIVATE_KEY is expected BASE64-encoded (see checklist) and decoded
+#   here, then validated immediately, because Bitbucket's secured-variable
+#   field is single-line and would otherwise silently corrupt a pasted
+#   multi-line PEM. GitHub's version just did `echo "$SSH_PRIVATE_KEY" > file`
+#   directly, which is safe there since GitHub Actions secrets keep newlines.
+
+image: atlassian/default-image:4
+
+definitions:
+  steps:
+    - step: &lint
+        name: Lint
+        image: python:3.11-slim
+        script:
+          # == Python syntax check == (github step: "Python syntax check")
+          - python -m compileall -q .
+          # == Shell syntax check (remote deploy script) == (github step: same name)
+          - bash -n .github/scripts/deploy-remote.sh
+
+    - step: &deploy
+        name: Deploy
+        # atlassian/default-image:4 already ships bash, git, openssh-client,
+        # curl, tar — everything the steps below need.
+        script:
+          # == Set up SSH == (github step: "Set up SSH")
+          - mkdir -p ~/.ssh
+          - printf '%s' "$SSH_PRIVATE_KEY" | tr -d '[:space:]' | base64 -d > ~/.ssh/deploy_key
+          - chmod 600 ~/.ssh/deploy_key
+          - ssh-keygen -y -f ~/.ssh/deploy_key >/dev/null 2>&1 || { echo "ERROR: SSH_PRIVATE_KEY did not decode to a usable private key"; exit 1; }
+          - ssh-keyscan -p "$SSH_PORT" "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+          # == Package and ship release (git archive overlay, no server-side git) ==
+          # (github step: same name — command and flags unchanged)
+          - git archive --format=tar HEAD | ssh -p "$SSH_PORT" -i ~/.ssh/deploy_key "$SSH_USER@$SSH_HOST" "tar -x -C /opt/hubspot-rep-dashboard"
+
+          # == Build, deploy, health-check, auto-rollback on failure ==
+          # (github step: same name — deploy-remote.sh reused unchanged, same path)
+          - ssh -p "$SSH_PORT" -i ~/.ssh/deploy_key "$SSH_USER@$SSH_HOST" 'bash -s' < .github/scripts/deploy-remote.sh
+
+pipelines:
+  branches:
+    main:
+      - step: *lint
+      - step: *deploy
+
+  # Equivalent of GitHub's `workflow_dispatch: {}` (manual re-run of the
+  # current commit, no new push needed). Trigger from Bitbucket: repo ->
+  # Pipelines -> Run pipeline -> Custom: manual-deploy -> pick branch/commit.
+  custom:
+    manual-deploy:
+      - step: *lint
+      - step: *deploy
